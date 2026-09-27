@@ -1,0 +1,374 @@
+openapi: 3.0.3
+info:
+  title: Ameso Care & Hermes PERS API
+  version: 1.0.0
+  description: >
+    Phase 1 POC API. Services run separately: auth :5001, patient :5002,
+    incident :5003, notification :5004, audit :5005. All endpoints except
+    /api/auth/login and /health require a Bearer JWT.
+
+servers:
+  - url: http://localhost:5001
+    description: Auth Service
+  - url: http://localhost:5002
+    description: Patient Service
+  - url: http://localhost:5003
+    description: Incident Service
+  - url: http://localhost:5004
+    description: Notification Service
+  - url: http://localhost:5005
+    description: Audit Service
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/auth/login:
+    post:
+      summary: Login, returns JWT (Auth Service)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, example: care.anna }
+                password: { type: string, example: demo123 }
+      responses:
+        "200":
+          description: Token + user info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  username: { type: string }
+                  displayName: { type: string }
+                  role: { type: string, enum: [Patient, CareExecutive, Admin] }
+                  patientId: { type: string, nullable: true }
+        "401": { description: Invalid credentials }
+
+  /api/patient/{id}:
+    get:
+      summary: Patient profile with contacts, hospital, previous incidents (Patient Service)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, example: PAT1001 }
+      responses:
+        "200":
+          description: Patient bundle
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PatientBundle" }
+        "404": { description: Not found }
+    put:
+      summary: Update patient contact details (Patient Service)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                phone: { type: string, nullable: true }
+                address: { type: string, nullable: true }
+      responses:
+        "204": { description: Updated }
+        "404": { description: Not found }
+
+  /api/sos:
+    post:
+      summary: Activate SOS — creates a Critical incident (Incident Service)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SosRequest" }
+      responses:
+        "201":
+          description: Incident created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  incidentId: { type: string, example: INC-202607270001 }
+                  status: { type: string, example: Open }
+
+  /api/sos/cancelled:
+    post:
+      summary: Audit a patient-side SOS cancellation, no incident created (Incident Service)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                patientId: { type: string }
+                timestamp: { type: string, format: date-time }
+      responses:
+        "202": { description: Recorded }
+
+  /api/incidents:
+    get:
+      summary: List incidents, newest first (Incident Service)
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [Open, Acknowledged, Closed, Cancelled] }
+      responses:
+        "200":
+          description: Incident list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Incident" }
+
+  /api/incidents/{id}:
+    get:
+      summary: Incident with full history (Incident Service)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Incident + history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  incident: { $ref: "#/components/schemas/Incident" }
+                  history:
+                    type: array
+                    items: { $ref: "#/components/schemas/HistoryEntry" }
+        "404": { description: Not found }
+
+  /api/incidents/{id}/ack:
+    post:
+      summary: Acknowledge — triggers async hospital + contact notifications (Incident Service)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ackedBy: { type: string, nullable: true }
+      responses:
+        "200": { description: Acknowledged }
+        "409": { description: Not in Open state }
+
+  /api/incidents/{id}/close:
+    post:
+      summary: Close incident (Incident Service)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                closedBy: { type: string, nullable: true }
+                reason: { type: string, nullable: true }
+      responses:
+        "200": { description: Closed }
+        "409": { description: Not found or already closed }
+
+  /api/notifications/hospital:
+    post:
+      summary: Manually (re)send hospital notification (Notification Service)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                incidentId: { type: string }
+      responses:
+        "202": { description: Dispatch started }
+        "404": { description: Incident not found }
+
+  /api/notifications/ambulance:
+    post:
+      summary: Call Ambulance — WhatsApp the hospital with patient, coordinates, and emergency contacts (Notification Service)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                incidentId: { type: string }
+      responses:
+        "202": { description: Dispatch started }
+        "404": { description: Incident not found }
+
+  /api/notifications/emergency-contacts:
+    post:
+      summary: Manually (re)send emergency contact notifications (Notification Service)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                incidentId: { type: string }
+      responses:
+        "202": { description: Dispatch started }
+        "404": { description: Incident not found }
+
+  /api/notifications:
+    get:
+      summary: Notifications for an incident (Notification Service)
+      parameters:
+        - { name: incidentId, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Notification records
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/NotificationRecord" }
+
+  /api/audit:
+    get:
+      summary: Audit trail, filterable by incident (Audit Service)
+      parameters:
+        - { name: incidentId, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+      responses:
+        "200":
+          description: Audit entries, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditEntry" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    SosRequest:
+      type: object
+      required: [patientId, patientName, bloodGroup, age, phone, latitude, longitude, timestamp]
+      properties:
+        patientId: { type: string, example: PAT1001 }
+        patientName: { type: string, example: John Doe }
+        bloodGroup: { type: string, example: O+ }
+        age: { type: integer, example: 76 }
+        phone: { type: string, example: "+4512345678" }
+        latitude: { type: number, example: 55.6761 }
+        longitude: { type: number, example: 12.5683 }
+        timestamp: { type: string, format: date-time }
+
+    Incident:
+      type: object
+      properties:
+        id: { type: string, example: INC-202607270001 }
+        patientId: { type: string }
+        patientName: { type: string }
+        status: { type: string, enum: [Open, Acknowledged, Closed, Cancelled] }
+        severity: { type: string, enum: [Critical, High, Medium, Low] }
+        latitude: { type: number }
+        longitude: { type: number }
+        createdAt: { type: string, format: date-time }
+        ackedAt: { type: string, format: date-time, nullable: true }
+        ackedBy: { type: string, nullable: true }
+        closedAt: { type: string, format: date-time, nullable: true }
+        closedBy: { type: string, nullable: true }
+        closeReason: { type: string, nullable: true }
+
+    HistoryEntry:
+      type: object
+      properties:
+        eventType: { type: string, example: Acknowledged }
+        actor: { type: string }
+        details: { type: string, nullable: true }
+        occurredAt: { type: string, format: date-time }
+
+    PatientBundle:
+      type: object
+      properties:
+        patient:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            age: { type: integer }
+            bloodGroup: { type: string }
+            phone: { type: string }
+            address: { type: string }
+            photoUrl: { type: string, nullable: true }
+            medicalConditions: { type: array, items: { type: string } }
+            medications: { type: array, items: { type: string } }
+            preferredHospitalId: { type: string }
+            homeLatitude: { type: number }
+            homeLongitude: { type: number }
+        contacts:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              relation: { type: string }
+              phone: { type: string }
+              email: { type: string, nullable: true }
+              preferredChannel: { type: string, enum: [SMS, WhatsApp, Email] }
+        hospital:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string }
+            name: { type: string }
+            address: { type: string }
+            phone: { type: string }
+            email: { type: string }
+            latitude: { type: number }
+            longitude: { type: number }
+        previousIncidents:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              status: { type: string }
+              severity: { type: string }
+              createdAt: { type: string, format: date-time }
+              closeReason: { type: string, nullable: true }
+
+    NotificationRecord:
+      type: object
+      properties:
+        id: { type: integer }
+        incidentId: { type: string }
+        recipientType: { type: string, enum: [Hospital, EmergencyContact] }
+        recipientName: { type: string }
+        channel: { type: string, enum: [SMS, WhatsApp, Email] }
+        destination: { type: string }
+        subject: { type: string, nullable: true }
+        status: { type: string, enum: [Pending, Sent, Delivered, Failed] }
+        sentAt: { type: string, format: date-time, nullable: true }
+        deliveredAt: { type: string, format: date-time, nullable: true }
+
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        eventType: { type: string, example: SosActivated }
+        service: { type: string, example: incident-service }
+        actor: { type: string, nullable: true }
+        incidentId: { type: string, nullable: true }
+        payload: { type: string, nullable: true, description: JSON payload }
+        occurredAt: { type: string, format: date-time }

@@ -1,0 +1,26 @@
+# HTTPS layer. Use together with the base file:
+#   docker compose -f docker-compose.prod.yml -f docker-compose.caddy.yml up -d --build
+# Requires SSLIP_BASE and BIND_ADDR=127.0.0.1 in .env, and firewall open on 80+443.
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      SSLIP_BASE: "${SSLIP_BASE:?set SSLIP_BASE in .env}"
+    ports:
+      - "80:80"     # required for the ACME HTTP-01 challenge
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data      # persists issued certs across restarts
+      - caddyconfig:/config
+    depends_on:
+      - auth-service
+      - patient-service
+      - incident-service
+      - notification-service
+      - audit-service
+
+volumes:
+  caddydata:
+  caddyconfig:

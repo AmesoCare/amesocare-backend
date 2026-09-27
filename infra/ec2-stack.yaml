@@ -1,0 +1,300 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Ameso Care & Hermes POC — single EC2 instance running the full docker-compose
+  stack. Self-contained (own VPC, subnet, IGW, security group, Elastic IP).
+  Create the stack to spin up; delete the stack to tear everything down and stop
+  all charges. The only cost is while the stack exists.
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Existing EC2 key pair for SSH access.
+
+  InstanceType:
+    Type: String
+    Default: t4g.medium
+    AllowedValues: [t4g.small, t4g.medium, t4g.large, t4g.xlarge]
+    Description: ARM Graviton instance size. t4g.medium (4 GB) is the minimum that builds comfortably with swap.
+
+  SshCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR allowed to SSH (port 22). Lock this to YOUR.IP/32 in production.
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+
+  UbuntuAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/arm64/hvm/ebs-gp2/ami-id
+    Description: Canonical Ubuntu 22.04 ARM64 AMI, resolved from the SSM public parameter (region-independent).
+
+  VolumeSizeGb:
+    Type: Number
+    Default: 50
+    MinValue: 30
+    Description: Root EBS volume size (GB).
+
+  RepoUrl:
+    Type: String
+    Default: "https://github.com/AmesoCare/amesocare-backend.git"
+    Description: Git URL to clone on boot. Leave GitHubToken blank for a public repo; provide it for a private one.
+
+  UiRepoUrl:
+    Type: String
+    Default: "https://github.com/AmesoCare/amesocare-ui.git"
+    Description: UI repository containing the hospital and patient applications.
+
+  GitHubToken:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: >
+      Optional GitHub PAT for cloning a PRIVATE repo. If blank, the instance only
+      installs Docker + prereqs and you clone manually. If set, the instance
+      auto-clones and brings the stack up. Note: the token is written into
+      instance UserData — use a fine-grained, read-only, short-lived token.
+
+  WhatsAppAccessToken:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional WhatsApp Cloud API token. Blank = mock notifications.
+
+  WhatsAppPhoneNumberId:
+    Type: String
+    Default: ""
+    Description: Optional WhatsApp phone number id.
+
+  EnableHttps:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      When true, the auto-deploy brings the stack up behind Caddy with automatic
+      Let's Encrypt TLS on sslip.io (needed for browser geolocation). When false,
+      plain HTTP on the app ports. Only takes effect together with GitHubToken.
+
+Conditions:
+  AutoDeploy: !Not [!Equals [!Ref GitHubToken, ""]]
+  UseHttps: !Equals [!Ref EnableHttps, "true"]
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-vpc" }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-igw" }]
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-subnet" }]
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-rt" }]
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Ameso POC — SSH, HTTP/HTTPS, and app ports
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref SshCidr, Description: SSH }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: HTTP / Lets Encrypt }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS }
+        - { IpProtocol: tcp, FromPort: 3000, ToPort: 3001, CidrIp: 0.0.0.0/0, Description: Frontends (plain-HTTP mode) }
+        - { IpProtocol: tcp, FromPort: 5001, ToPort: 5005, CidrIp: 0.0.0.0/0, Description: Backend services (plain-HTTP mode) }
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-sg" }]
+
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-eip" }]
+
+  EipAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt ElasticIp.AllocationId
+      InstanceId: !Ref Instance
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref UbuntuAmi
+      KeyName: !Ref KeyName
+      SubnetId: !Ref Subnet
+      SecurityGroupIds: [!Ref SecurityGroup]
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref VolumeSizeGb
+            VolumeType: gp3
+            DeleteOnTermination: true
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-instance" }]
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -euxo pipefail
+            exec > /var/log/ameso-bootstrap.log 2>&1
+
+            # --- Docker ---
+            apt-get update
+            apt-get install -y ca-certificates curl git
+            install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+            chmod a+r /etc/apt/keyrings/docker.asc
+            echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu jammy stable" \
+              > /etc/apt/sources.list.d/docker.list
+            apt-get update
+            apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+            systemctl enable --now docker
+            usermod -aG docker ubuntu
+
+            # --- Swap (t4g.medium is 4 GB; builds need headroom) ---
+            if [ ! -f /swapfile ]; then
+              fallocate -l 4G /swapfile
+              chmod 600 /swapfile
+              mkswap /swapfile
+              swapon /swapfile
+              echo '/swapfile none swap sw 0 0' >> /etc/fstab
+            fi
+
+            # --- Public IP (IMDSv2) ---
+            TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+            PUBIP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4)
+
+            # --- Optional auto-deploy (only when a GitHub token is supplied) ---
+            if [ -n "${GitHubTokenSub}" ]; then
+              cd /home/ubuntu
+              CLONE_URL=$(echo "${RepoUrlSub}" | sed "s#https://#https://${GitHubTokenSub}@#")
+              sudo -u ubuntu git clone "$CLONE_URL" amesocare-backend
+              UI_CLONE_URL=$(echo "${UiRepoUrlSub}" | sed "s#https://#https://${GitHubTokenSub}@#")
+              sudo -u ubuntu git clone "$UI_CLONE_URL" amesocare-ui
+              cd amesocare-backend
+              PGPW=$(openssl rand -base64 24)
+              JWTK=$(openssl rand -base64 48)
+
+              if [ "${EnableHttpsSub}" = "true" ]; then
+                # HTTPS via Caddy + Let's Encrypt on sslip.io. Dashed IP is the hostname.
+                DASHED=$(echo "$PUBIP" | tr '.' '-')
+                API="https://api.$DASHED.sslip.io"
+                cat > .env <<ENVEOF
+            AUTH_URL=$API
+            PATIENT_URL=$API
+            INCIDENT_URL=$API
+            NOTIFICATION_URL=$API
+            SSLIP_BASE=$DASHED.sslip.io
+            BIND_ADDR=127.0.0.1
+            POSTGRES_PASSWORD=$PGPW
+            JWT_KEY=$JWTK
+            WHATSAPP_ACCESS_TOKEN=${WhatsAppTokenSub}
+            WHATSAPP_PHONE_NUMBER_ID=${WhatsAppPhoneSub}
+            ENVEOF
+                COMPOSE_ARGS="-f docker-compose.prod.yml -f docker-compose.caddy.yml"
+              else
+                # Plain HTTP on the published app ports.
+                cat > .env <<ENVEOF
+            AUTH_URL=http://$PUBIP:5001
+            PATIENT_URL=http://$PUBIP:5002
+            INCIDENT_URL=http://$PUBIP:5003
+            NOTIFICATION_URL=http://$PUBIP:5004
+            POSTGRES_PASSWORD=$PGPW
+            JWT_KEY=$JWTK
+            WHATSAPP_ACCESS_TOKEN=${WhatsAppTokenSub}
+            WHATSAPP_PHONE_NUMBER_ID=${WhatsAppPhoneSub}
+            ENVEOF
+                COMPOSE_ARGS="-f docker-compose.prod.yml"
+              fi
+
+              # Split browser configuration from backend secrets.
+              awk '/^(AUTH_URL|PATIENT_URL|INCIDENT_URL|NOTIFICATION_URL|BIND_ADDR)=/' .env > ../amesocare-ui/.env
+              awk '!/^(AUTH_URL|PATIENT_URL|INCIDENT_URL|NOTIFICATION_URL)=/' .env > .env.backend
+              mv .env.backend .env
+              chown ubuntu:ubuntu .env ../amesocare-ui/.env
+              chmod 600 .env ../amesocare-ui/.env
+              # scrub the token from the working copy of the remote URL
+              git remote set-url origin "${RepoUrlSub}"
+              git -C ../amesocare-ui remote set-url origin "${UiRepoUrlSub}"
+              # Backend creates the shared network before the UI joins it.
+              sudo -u ubuntu docker compose -f docker-compose.prod.yml up -d --build
+              (cd ../amesocare-ui && sudo -u ubuntu docker compose -f docker-compose.prod.yml up -d --build)
+              if [ "${EnableHttpsSub}" = "true" ]; then
+                sudo -u ubuntu docker compose $COMPOSE_ARGS up -d caddy
+              fi
+            fi
+
+            echo "BOOTSTRAP COMPLETE" >> /var/log/ameso-bootstrap.log
+          - GitHubTokenSub: !Ref GitHubToken
+            RepoUrlSub: !Ref RepoUrl
+            UiRepoUrlSub: !Ref UiRepoUrl
+            WhatsAppTokenSub: !Ref WhatsAppAccessToken
+            WhatsAppPhoneSub: !Ref WhatsAppPhoneNumberId
+            EnableHttpsSub: !Ref EnableHttps
+
+Outputs:
+  PublicIP:
+    Description: Elastic IP of the instance
+    Value: !Ref ElasticIp
+  SshCommand:
+    Description: SSH in
+    Value: !Sub "ssh -i /path/to/${KeyName}.pem ubuntu@${ElasticIp}"
+  AmesoCareUrl:
+    Description: Patient app (plain-HTTP mode)
+    Value: !Sub "http://${ElasticIp}:3000"
+  HermesUrl:
+    Description: Care dashboard (plain-HTTP mode)
+    Value: !Sub "http://${ElasticIp}:3001"
+  AmesoCareUrlHttps:
+    Condition: UseHttps
+    Description: Patient app (Caddy/HTTPS mode)
+    Value: !Sub
+      - "https://care.${Dashed}.sslip.io"
+      - Dashed: !Join ["-", !Split [".", !Ref ElasticIp]]
+  HermesUrlHttps:
+    Condition: UseHttps
+    Description: Care dashboard (Caddy/HTTPS mode)
+    Value: !Sub
+      - "https://hermes.${Dashed}.sslip.io"
+      - Dashed: !Join ["-", !Split [".", !Ref ElasticIp]]
+  BootstrapLog:
+    Description: Tail this on the instance to watch first-boot progress
+    Value: "sudo tail -f /var/log/ameso-bootstrap.log"
+  AutoDeployed:
+    Description: Whether the stack auto-cloned and started the app
+    Value: !If [AutoDeploy, "yes — app building on boot (~10-15 min)", "no — SSH in and deploy manually"]

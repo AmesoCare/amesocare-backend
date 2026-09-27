@@ -1,0 +1,38 @@
+# Automatic Let's Encrypt TLS for the three sslip.io subdomains.
+# SSLIP_BASE comes from .env, e.g. 203-0-113-10.sslip.io
+
+care.{$SSLIP_BASE} {
+	reverse_proxy ameso-care:3000
+}
+
+hermes.{$SSLIP_BASE} {
+	reverse_proxy hermes:3000
+}
+
+# One API hostname, path-routed to the five backend services.
+api.{$SSLIP_BASE} {
+	handle /api/auth/* {
+		reverse_proxy auth-service:8080
+	}
+	handle /api/patient/* {
+		reverse_proxy patient-service:8080
+	}
+	handle /api/hospitals* {
+		reverse_proxy patient-service:8080
+	}
+	handle /api/sos* {
+		reverse_proxy incident-service:8080
+	}
+	handle /api/incidents* {
+		reverse_proxy incident-service:8080
+	}
+	handle /api/notifications* {
+		reverse_proxy notification-service:8080
+	}
+	handle /api/audit* {
+		reverse_proxy audit-service:8080
+	}
+	handle {
+		respond "Ameso API" 404
+	}
+}
