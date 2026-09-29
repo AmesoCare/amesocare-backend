@@ -33,7 +33,7 @@ public class Application {
     @Autowired ObjectMapper json;
 
     record ManualNotifyRequest(String incidentId) {}
-    record IncidentLocation(String patientId, double latitude, double longitude) {}
+    record IncidentLocation(String patientId, Double latitude, Double longitude) {}
     record NotificationRow(
             int id, String incidentId, String recipientType, String recipientName,
             String channel, String destination, String subject, String status,
@@ -67,6 +67,8 @@ public class Application {
         var incident = location(req.incidentId());
         if (incident == null) return ResponseEntity.notFound().build();
 
+        if (incident.latitude() == null || incident.longitude() == null)
+            return ResponseEntity.status(409).body(ameso.shared.Ameso.obj("error", "Patient location is not available"));
         dispatcher.dispatchAmbulance(req.incidentId(), incident.patientId(), incident.latitude(), incident.longitude());
         return ResponseEntity.accepted().build();
     }

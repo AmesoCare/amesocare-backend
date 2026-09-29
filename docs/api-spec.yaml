@@ -5,7 +5,7 @@ info:
   description: >
     Phase 1 POC API. Services run separately: auth :5001, patient :5002,
     incident :5003, notification :5004, audit :5005. All endpoints except
-    /api/auth/login and /health require a Bearer JWT.
+    /api/auth/login, /health, registration/status and SOS endpoints require a Bearer JWT.
 
 servers:
   - url: http://localhost:5001
@@ -52,6 +52,37 @@ paths:
                   patientId: { type: string, nullable: true }
         "401": { description: Invalid credentials }
 
+  /api/patients/register:
+    post:
+      summary: Register an installation (Patient Service); retries return the original patient
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegistrationRequest" }
+      responses:
+        "200":
+          description: Registered patient (including for an existing deviceId)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RegistrationStatus" }
+        "400": { description: Invalid fields; response contains an error message }
+
+  /api/patients/device/{deviceId}:
+    get:
+      summary: Authoritative installation registration status (Patient Service)
+      security: []
+      parameters:
+        - { name: deviceId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Registration state and patient, or registered false with patient null
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RegistrationStatus" }
+        "400": { description: Invalid UUID }
+
   /api/patient/{id}:
     get:
       summary: Patient profile with contacts, hospital, previous incidents (Patient Service)
@@ -82,7 +113,8 @@ paths:
 
   /api/sos:
     post:
-      summary: Activate SOS — creates a Critical incident (Incident Service)
+      summary: Activate SOS for a registered installation (Incident Service)
+      security: []
       requestBody:
         required: true
         content:
@@ -98,20 +130,21 @@ paths:
                 properties:
                   incidentId: { type: string, example: INC-202607270001 }
                   status: { type: string, example: Open }
+        "400": { description: Invalid UUID }
+        "409": { description: Installation is not registered }
 
   /api/sos/cancelled:
     post:
-      summary: Audit a patient-side SOS cancellation, no incident created (Incident Service)
+      summary: Audit a registered installation SOS cancellation (Incident Service)
+      security: []
       requestBody:
         content:
           application/json:
-            schema:
-              type: object
-              properties:
-                patientId: { type: string }
-                timestamp: { type: string, format: date-time }
+            schema: { $ref: "#/components/schemas/SosRequest" }
       responses:
         "202": { description: Recorded }
+        "400": { description: Invalid UUID }
+        "409": { description: Installation is not registered }
 
   /api/incidents:
     get:
@@ -143,6 +176,10 @@ paths:
                 type: object
                 properties:
                   incident: { $ref: "#/components/schemas/Incident" }
+                  patient:
+                    allOf:
+                      - { $ref: "#/components/schemas/PatientRegistration" }
+                    nullable: true
                   history:
                     type: array
                     items: { $ref: "#/components/schemas/HistoryEntry" }
@@ -260,18 +297,45 @@ components:
       bearerFormat: JWT
 
   schemas:
+    RegistrationRequest:
+      type: object
+      required: [deviceId, patientName, age, gender, address, bloodGroup, phone]
+      properties:
+        deviceId: { type: string, format: uuid }
+        patientName: { type: string, minLength: 1, maxLength: 200 }
+        phone: { type: string, pattern: '^[0-9]{10}$', minLength: 10, maxLength: 10, description: Required 10 digits without a country code }
+        age: { type: string, maxLength: 200, description: Whole number from 1 to 120 }
+        gender: { type: string, enum: [Male, Female] }
+        address: { type: string, minLength: 1, maxLength: 200 }
+        bloodGroup: { type: string, enum: ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'] }
+        medication: { type: string, maxLength: 200, nullable: true }
+        allergies: { type: string, maxLength: 200, nullable: true }
+        surgery: { type: string, maxLength: 200, nullable: true }
+        remarks: { type: string, maxLength: 200, nullable: true }
+
+    PatientRegistration:
+      allOf:
+        - { $ref: "#/components/schemas/RegistrationRequest" }
+        - type: object
+          properties:
+            id: { type: string }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+
+    RegistrationStatus:
+      type: object
+      properties:
+        registered: { type: boolean }
+        patient:
+          allOf:
+            - { $ref: "#/components/schemas/PatientRegistration" }
+          nullable: true
+
     SosRequest:
       type: object
-      required: [patientId, patientName, bloodGroup, age, phone, latitude, longitude, timestamp]
+      required: [deviceId]
       properties:
-        patientId: { type: string, example: PAT1001 }
-        patientName: { type: string, example: John Doe }
-        bloodGroup: { type: string, example: O+ }
-        age: { type: integer, example: 76 }
-        phone: { type: string, example: "+4512345678" }
-        latitude: { type: number, example: 55.6761 }
-        longitude: { type: number, example: 12.5683 }
-        timestamp: { type: string, format: date-time }
+        deviceId: { type: string, format: uuid }
 
     Incident:
       type: object
@@ -281,8 +345,8 @@ components:
         patientName: { type: string }
         status: { type: string, enum: [Open, Acknowledged, Closed, Cancelled] }
         severity: { type: string, enum: [Critical, High, Medium, Low] }
-        latitude: { type: number }
-        longitude: { type: number }
+        latitude: { type: number, nullable: true }
+        longitude: { type: number, nullable: true }
         createdAt: { type: string, format: date-time }
         ackedAt: { type: string, format: date-time, nullable: true }
         ackedBy: { type: string, nullable: true }
@@ -308,14 +372,19 @@ components:
             name: { type: string }
             age: { type: integer }
             bloodGroup: { type: string }
-            phone: { type: string }
+            phone: { type: string, nullable: true }
             address: { type: string }
             photoUrl: { type: string, nullable: true }
             medicalConditions: { type: array, items: { type: string } }
             medications: { type: array, items: { type: string } }
-            preferredHospitalId: { type: string }
-            homeLatitude: { type: number }
-            homeLongitude: { type: number }
+            preferredHospitalId: { type: string, nullable: true }
+            homeLatitude: { type: number, nullable: true }
+            homeLongitude: { type: number, nullable: true }
+            gender: { type: string, nullable: true }
+            medication: { type: string, nullable: true }
+            allergies: { type: string, nullable: true }
+            surgery: { type: string, nullable: true }
+            remarks: { type: string, nullable: true }
         contacts:
           type: array
           items:
@@ -335,8 +404,8 @@ components:
             address: { type: string }
             phone: { type: string }
             email: { type: string }
-            latitude: { type: number }
-            longitude: { type: number }
+            latitude: { type: number, nullable: true }
+            longitude: { type: number, nullable: true }
         previousIncidents:
           type: array
           items:

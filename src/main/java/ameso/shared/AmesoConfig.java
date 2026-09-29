@@ -72,6 +72,8 @@ public class AmesoConfig {
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(a -> a
                         .requestMatchers("/health", "/api/auth/login", "/error", "/swagger/**", "/swagger-ui/**").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/patients/register", "/api/sos", "/api/sos/cancelled").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/patients/device/*").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()))
                 .build();

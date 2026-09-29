@@ -8,18 +8,20 @@ import java.util.stream.Collectors;
 public final class Templates {
 
     /** Formats a double the way .NET does (59.3293, 13 — never "13.0"). */
-    static String num(double value) {
+    static String num(Double value) {
+        if (value == null) return "Not provided";
         return BigDecimal.valueOf(value).stripTrailingZeros().toPlainString();
     }
 
-    public static String mapsLink(double lat, double lon) {
+    public static String mapsLink(Double lat, Double lon) {
+        if (lat == null || lon == null) return "Location not provided";
         return "https://maps.google.com/?q=" + num(lat) + "," + num(lon);
     }
 
     public static final String HOSPITAL_SUBJECT = "Emergency Patient Alert";
 
     public static String hospital(
-            String patientName, int age, String bloodGroup, double lat, double lon,
+            String patientName, int age, String bloodGroup, Double lat, Double lon,
             String[] conditions, String emergencyContactPhone, String incidentId) {
         return """
                 EMERGENCY ALERT
@@ -63,7 +65,7 @@ public final class Templates {
     }
 
     public static String ambulanceDispatch(
-            String patientName, double lat, double lon, String incidentId, List<ContactInfo> contacts) {
+            String patientName, Double lat, Double lon, String incidentId, List<ContactInfo> contacts) {
         return """
                 AMBULANCE DISPATCH REQUEST
 
@@ -86,7 +88,7 @@ public final class Templates {
                 incidentId);
     }
 
-    public static String emergencyContact(String patientName, double lat, double lon, String incidentId) {
+    public static String emergencyContact(String patientName, Double lat, Double lon, String incidentId) {
         return """
                 EMERGENCY ALERT
 
@@ -101,7 +103,7 @@ public final class Templates {
                 %s""".formatted(patientName, mapsLink(lat, lon), incidentId);
     }
 
-    public static String sms(String patientName, double lat, double lon) {
+    public static String sms(String patientName, Double lat, Double lon) {
         return """
                 Emergency Alert
 

@@ -53,7 +53,7 @@ public class NotificationDispatcher {
     }
 
     /** Notify hospital + all emergency contacts for an acknowledged incident. */
-    public void dispatchForIncident(String incidentId, String patientId, double lat, double lon) {
+    public void dispatchForIncident(String incidentId, String patientId, Double lat, Double lon) {
         var patient = db.one(PatientInfo.class, PATIENT_SELECT, "patientId", patientId);
         if (patient == null) {
             log.warn("Patient {} not found; skipping notifications", patientId);
@@ -90,7 +90,7 @@ public class NotificationDispatcher {
     }
 
     /** Call Ambulance — WhatsApp the preferred hospital with patient, coordinates, and emergency contacts. */
-    public void dispatchAmbulance(String incidentId, String patientId, double lat, double lon) {
+    public void dispatchAmbulance(String incidentId, String patientId, Double lat, Double lon) {
         var patient = db.one(PatientInfo.class, PATIENT_SELECT, "patientId", patientId);
         if (patient == null) {
             log.warn("Patient {} not found; skipping ambulance dispatch", patientId);

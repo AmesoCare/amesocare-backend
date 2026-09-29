@@ -14,8 +14,8 @@ public final class Contracts {
             String patientId,
             String patientName,
             String severity,
-            double latitude,
-            double longitude,
+            Double latitude,
+            Double longitude,
             String actor,
             OffsetDateTime occurredAt) {}
 
@@ -28,15 +28,7 @@ public final class Contracts {
             OffsetDateTime occurredAt) {}
 
     // ---------- API DTOs ----------
-    public record SosRequest(
-            String patientId,
-            String patientName,
-            String bloodGroup,
-            int age,
-            String phone,
-            double latitude,
-            double longitude,
-            OffsetDateTime timestamp) {}
+    public record SosRequest(String deviceId) {}
 
     public record LoginRequest(String username, String password) {}
 

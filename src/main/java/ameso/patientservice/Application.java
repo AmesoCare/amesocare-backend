@@ -31,14 +31,16 @@ public class Application {
             SELECT p.id, p.name, p.age, p.blood_group AS bloodGroup, p.phone, p.address,
                    p.photo_url AS photoUrl, p.medical_conditions AS medicalConditions,
                    p.medications, p.preferred_hospital_id AS preferredHospitalId,
-                   p.home_latitude AS homeLatitude, p.home_longitude AS homeLongitude
+                   p.home_latitude AS homeLatitude, p.home_longitude AS homeLongitude,
+                   p.gender, p.medication, p.allergies, p.surgery, p.remarks
             FROM patient p
             """;
 
     record PatientRow(
             String id, String name, int age, String bloodGroup, String phone, String address,
             String photoUrl, String[] medicalConditions, String[] medications,
-            String preferredHospitalId, double homeLatitude, double homeLongitude) {}
+            String preferredHospitalId, Double homeLatitude, Double homeLongitude,
+            String gender, String medication, String allergies, String surgery, String remarks) {}
     record ContactRow(String name, String relation, String phone, String email, String preferredChannel) {}
     record HospitalRow(String id, String name, String address, String phone, String email, double latitude, double longitude) {}
     record PrevIncidentRow(String id, String status, String severity, OffsetDateTime createdAt, String closeReason) {}

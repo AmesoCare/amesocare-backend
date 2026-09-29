@@ -38,19 +38,24 @@ public class Application {
 
     @Autowired Db db;
     @Autowired Events events;
+    @Autowired ameso.shared.PatientRegistrationRepository registrations;
 
-    record SosCancelledRequest(String patientId, OffsetDateTime timestamp) {}
+    record SosCancelledRequest(String deviceId) {}
     record IncidentRow(
             String id, String patientId, String patientName, String status, String severity,
-            double latitude, double longitude, OffsetDateTime createdAt,
+            Double latitude, Double longitude, OffsetDateTime createdAt,
             OffsetDateTime ackedAt, String ackedBy,
             OffsetDateTime closedAt, String closedBy, String closeReason) {}
     record HistoryRow(String eventType, String actor, String details, OffsetDateTime occurredAt) {}
-    record AckInfoRow(String patientId, String patientName, String severity, double latitude, double longitude) {}
+    record AckInfoRow(String patientId, String patientName, String severity, Double latitude, Double longitude) {}
 
     // ---------- SOS ----------
+    @org.springframework.transaction.annotation.Transactional
     @PostMapping("/api/sos")
-    ResponseEntity<?> sos(@RequestBody SosRequest req) {
+    public ResponseEntity<?> sos(@RequestBody SosRequest req) {
+        var patient = registrations.find(ameso.shared.RegistrationValidation.deviceId(req.deviceId()));
+        if (patient == null) return ResponseEntity.status(409).body(obj("error", "Register this installation before sending SOS"));
+        var timestamp = OffsetDateTime.now(ZoneOffset.UTC);
         // Generate incident id: INC-YYYYMMDDNNNN (atomic per-day counter)
         var day = OffsetDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern("yyyyMMdd"));
         var counter = db.scalar(Integer.class, """
@@ -63,19 +68,19 @@ public class Application {
         db.exec("""
                 INSERT INTO incident (id, patient_id, status, severity, latitude, longitude, created_at)
                 VALUES (:incidentId, :patientId, 'Open', 'Critical', :latitude, :longitude, :timestamp)
-                """, "incidentId", incidentId, "patientId", req.patientId(),
-                "latitude", req.latitude(), "longitude", req.longitude(), "timestamp", req.timestamp());
+                """, "incidentId", incidentId, "patientId", patient.id(),
+                "latitude", null, "longitude", null, "timestamp", timestamp);
 
         db.exec("""
                 INSERT INTO incident_history (incident_id, event_type, actor, details)
                 VALUES (:incidentId, 'Created', :patientId, 'SOS activated by patient')
-                """, "incidentId", incidentId, "patientId", req.patientId());
+                """, "incidentId", incidentId, "patientId", patient.id());
 
         events.publish(Contracts.INCIDENT_EVENTS, new IncidentEvent(
-                "IncidentCreated", incidentId, req.patientId(), req.patientName(), "Critical",
-                req.latitude(), req.longitude(), req.patientId(), OffsetDateTime.now(ZoneOffset.UTC)));
-        events.audit("SosActivated", req.patientId(), incidentId, req);
-        events.audit("IncidentCreated", req.patientId(), incidentId, null);
+                "IncidentCreated", incidentId, patient.id(), patient.patientName(), "Critical",
+                null, null, patient.id(), OffsetDateTime.now(ZoneOffset.UTC)));
+        events.audit("SosActivated", patient.id(), incidentId, req);
+        events.audit("IncidentCreated", patient.id(), incidentId, null);
 
         return ResponseEntity.created(URI.create("/api/incidents/" + incidentId))
                 .body(obj("incidentId", incidentId, "status", "Open"));
@@ -83,14 +88,18 @@ public class Application {
 
     @PostMapping("/api/sos/cancelled")
     ResponseEntity<?> sosCancelled(@RequestBody SosCancelledRequest req) {
+        var patient = registrations.find(ameso.shared.RegistrationValidation.deviceId(req.deviceId()));
+        if (patient == null) return ResponseEntity.status(409).body(obj("error", "Installation is not registered"));
         // Patient cancelled during the 10-second window — no incident created, audit only
-        events.audit("SosCancelled", req.patientId(), null, req);
+        events.audit("SosCancelled", patient.id(), null, req);
         return ResponseEntity.accepted().build();
     }
 
     // ---------- Incidents ----------
     static final String INCIDENT_SELECT = """
-            SELECT i.id, i.patient_id AS patientId, p.name AS patientName, i.status, i.severity,
+            SELECT i.id, i.patient_id AS patientId,
+                   CASE WHEN p.device_id IS NOT NULL THEN p.name ELSE 'Registration unavailable' END AS patientName,
+                   i.status, i.severity,
                    i.latitude, i.longitude, i.created_at AS createdAt,
                    i.acked_at AS ackedAt, i.acked_by AS ackedBy,
                    i.closed_at AS closedAt, i.closed_by AS closedBy, i.close_reason AS closeReason
@@ -117,7 +126,13 @@ public class Application {
                 "SELECT event_type AS eventType, actor, details, occurred_at AS occurredAt FROM incident_history WHERE incident_id = :id ORDER BY occurred_at",
                 "id", id);
 
-        return ResponseEntity.ok(obj("incident", incident, "history", history));
+        var registration = db.one(ameso.shared.PatientRegistration.class, """
+                SELECT id, device_id::text AS deviceId, name AS patientName, age::text AS age,
+                       gender, address, phone, blood_group AS bloodGroup, medication, allergies, surgery, remarks,
+                       created_at AS createdAt, updated_at AS updatedAt
+                FROM patient WHERE id = :id AND device_id IS NOT NULL
+                """, "id", incident.patientId());
+        return ResponseEntity.ok(obj("incident", incident, "history", history, "patient", registration));
     }
 
     @PostMapping("/api/incidents/{id}/ack")
